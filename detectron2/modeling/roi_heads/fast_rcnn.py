@@ -138,7 +138,6 @@ def fast_rcnn_inference_single_image(
     if not valid_mask.all():
         boxes = boxes[valid_mask]
         scores = scores[valid_mask]
-
     scores = scores[:, :-1]
     num_bbox_reg_classes = boxes.shape[1] // 4
     # Convert to Boxes to use the `clip` function ...
@@ -152,22 +151,73 @@ def fast_rcnn_inference_single_image(
     # R' x 2. First column contains indices of the R predictions;
     # Second column contains indices of classes.
     filter_inds = filter_mask.nonzero()
+    # print('filter_mask', filter_mask)
     if num_bbox_reg_classes == 1:
         boxes = boxes[filter_inds[:, 0], 0]
     else:
         boxes = boxes[filter_mask]
+    
+    # # assumes the 0th column in filter_inds is always sorted, which it appears to be
+    # bboxes_to_keep = torch.unique_consecutive(filter_inds[:, 0])
+    # print(bboxes_to_keep)
+    # orig_scores_dist = scores[filter_inds[:, 0]]
+    # print(filter_inds[:, 0])
+    # print(orig_scores_dist.shape)
+
+    orig_scores = scores
     scores = scores[filter_mask]
+    # print('scores after filter_mask', scores.shape)
 
     # 2. Apply NMS for each class independently.
     keep = batched_nms(boxes, scores, filter_inds[:, 1], nms_thresh)
     if topk_per_image >= 0:
         keep = keep[:topk_per_image]
+    
     boxes, scores, filter_inds = boxes[keep], scores[keep], filter_inds[keep]
+    # ^ bboxes contains duplicates!
+
+    bboxes_to_keep = filter_inds[:, 0] # might include duplicate bbox ids e.x. 5x bbox 0, 4x bbox 1, etc
+
+    # remove duplicate bboxes
+    bbox_to_max_score = {}
+    bbox_to_max_idx = {}
+    for i, (s, b_idx) in enumerate(zip(scores, bboxes_to_keep)):
+        b_idx_item = b_idx.cpu().detach().item()
+        cur_max = bbox_to_max_score.get(b_idx_item, -1)
+        if s > cur_max:
+            bbox_to_max_score[b_idx_item] = s
+            bbox_to_max_idx[b_idx_item] = i # record the max score's idx in the tensor
+    
+    unique_bbox_idxs = [v for v in bbox_to_max_idx.values()]
+    boxes, scores, filter_inds = boxes[unique_bbox_idxs], scores[unique_bbox_idxs], filter_inds[unique_bbox_idxs]
+    
+    bboxes_to_keep = filter_inds[:, 0] # no more duplicate bbox ids
+    # print(bboxes_to_keep)
+    # print(scores)
+    # print()
+    
+
+    orig_scores_dist = orig_scores[bboxes_to_keep]
+    # score_idx_stack = torch.stack([scores, bboxes_to_keep], dim=-1)
+    # print(score_idx_stack)
+    # print(torch.unique(score_idx_stack, dim=0, sorted=True, return_inverse=True))
+    # print()
+
+    # print(torch.argmax(orig_scores_dist, dim=-1))
+    # print()
+    # print('orig_scores_dist', orig_scores_dist)
+    
+    # print('scores after keep', scores.shape)
 
     result = Instances(image_shape)
     result.pred_boxes = Boxes(boxes)
     result.scores = scores
+    # print(scores)
+    # print('-----')
+    # print(orig_scores)
     result.pred_classes = filter_inds[:, 1]
+    result.orig_scores_dist = orig_scores_dist
+    # print()
     return result, filter_inds[:, 0]
 
 
